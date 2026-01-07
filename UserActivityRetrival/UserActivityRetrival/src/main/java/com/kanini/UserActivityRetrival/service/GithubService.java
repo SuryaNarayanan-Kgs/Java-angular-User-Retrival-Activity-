@@ -3,7 +3,6 @@ package com.kanini.UserActivityRetrival.service;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.*;
 import org.springframework.stereotype.Service;
-import org.springframework.util.MultiValueMap;
 import org.springframework.web.client.RestClientException;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.util.UriComponentsBuilder;
@@ -48,15 +47,54 @@ public class GithubService {
     }
 
     public ResponseEntity<String> getCommits(String owner, String repo, Map<String, String> queryParams, String token) {
-        HttpEntity<Void> entity = new HttpEntity<>(buildHeaders(token));
-        UriComponentsBuilder builder = UriComponentsBuilder.fromHttpUrl(GITHUB_API + "/repos/" + owner + "/" + repo + "/commits");
-        if (queryParams != null) {
-            queryParams.forEach(builder::queryParam);
+        HttpHeaders headers = buildHeaders(token);
+        HttpEntity<Void> entity = new HttpEntity<>(headers);
+
+        String authorsParam = queryParams != null ? queryParams.get("author") : null;
+        String[] authors = (authorsParam != null && !authorsParam.isBlank()) ? authorsParam.split(",") : new String[]{null};
+
+        StringBuilder allCommitsJson = new StringBuilder();
+        allCommitsJson.append("[");
+        boolean firstOverall = true;
+
+        for (String author : authors) {
+            int page = 1;
+            int perPage = 100;
+            while (true) {
+                UriComponentsBuilder builder = UriComponentsBuilder.fromHttpUrl(GITHUB_API + "/repos/" + owner + "/" + repo + "/commits").queryParam("page", page).queryParam("per_page", perPage);
+
+                if (queryParams != null) {
+                    queryParams.forEach((k, v) -> {
+                        if (!k.equals("author")) {
+                            builder.queryParam(k, v);
+                        }
+                    });
+                }
+                if (author != null && !author.isBlank()) {
+                    builder.queryParam("author", author.trim());
+                }
+                ResponseEntity<String> response;
+                try {
+                    response = restTemplate.exchange(builder.toUriString(), HttpMethod.GET, entity, String.class);
+                } catch (RestClientException ex) {
+                    return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body("{\"error\":\"github request failed\"}");
+                }
+                String body = response.getBody();
+                if (body == null || body.equals("[]")) {
+                    break;
+                }
+                if (!firstOverall) {
+                    allCommitsJson.append(",");
+                }
+                allCommitsJson.append(body, 1, body.length() - 1);
+                firstOverall = false;
+                if (body.split("\\{").length - 1 < perPage) {
+                    break;
+                }
+                page++;
+            }
         }
-        try {
-            return restTemplate.exchange(builder.toUriString(), HttpMethod.GET, entity, String.class);
-        } catch (RestClientException ex) {
-            return ResponseEntity.status(HttpStatus.BAD_GATEWAY).body("{\"error\":\"github request failed\"}");
-        }
+        allCommitsJson.append("]");
+        return ResponseEntity.ok(allCommitsJson.toString());
     }
 }
